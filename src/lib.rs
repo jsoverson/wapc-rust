@@ -128,6 +128,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::error::Error;
 use std::sync::Arc;
 
+use dyn_clone::{clone_box, DynClone};
 use parking_lot::RwLock;
 
 static GLOBAL_MODULE_COUNT: AtomicU64 = AtomicU64::new(1);
@@ -139,49 +140,49 @@ pub const HOST_NAMESPACE: &str = "wapc";
 pub struct WapcFunctions;
 
 impl WapcFunctions {
-    // -- Functions called by guest, exported by host
-    pub const HOST_CONSOLE_LOG: &'static str = "__console_log";
-    pub const HOST_CALL: &'static str = "__host_call";
-    pub const GUEST_REQUEST_FN: &'static str = "__guest_request";
-    pub const HOST_RESPONSE_FN: &'static str = "__host_response";
-    pub const HOST_RESPONSE_LEN_FN: &'static str = "__host_response_len";
-    pub const GUEST_RESPONSE_FN: &'static str = "__guest_response";
-    pub const GUEST_ERROR_FN: &'static str = "__guest_error";
-    pub const HOST_ERROR_FN: &'static str = "__host_error";
-    pub const HOST_ERROR_LEN_FN: &'static str = "__host_error_len";
+  // -- Functions called by guest, exported by host
+  pub const HOST_CONSOLE_LOG: &'static str = "__console_log";
+  pub const HOST_CALL: &'static str = "__host_call";
+  pub const GUEST_REQUEST_FN: &'static str = "__guest_request";
+  pub const HOST_RESPONSE_FN: &'static str = "__host_response";
+  pub const HOST_RESPONSE_LEN_FN: &'static str = "__host_response_len";
+  pub const GUEST_RESPONSE_FN: &'static str = "__guest_response";
+  pub const GUEST_ERROR_FN: &'static str = "__guest_error";
+  pub const HOST_ERROR_FN: &'static str = "__host_error";
+  pub const HOST_ERROR_LEN_FN: &'static str = "__host_error_len";
 
-    // -- Functions called by host, exported by guest
-    pub const GUEST_CALL: &'static str = "__guest_call";
-    pub const WAPC_INIT: &'static str = "wapc_init";
-    pub const TINYGO_START: &'static str = "_start";
+  // -- Functions called by host, exported by guest
+  pub const GUEST_CALL: &'static str = "__guest_call";
+  pub const WAPC_INIT: &'static str = "wapc_init";
+  pub const TINYGO_START: &'static str = "_start";
 
-    /// Start functions to attempt to call - order is important
-    pub const REQUIRED_STARTS: [&'static str; 2] = [Self::TINYGO_START, Self::WAPC_INIT];
+  /// Start functions to attempt to call - order is important
+  pub const REQUIRED_STARTS: [&'static str; 2] = [Self::TINYGO_START, Self::WAPC_INIT];
 }
 
 /// Parameters defining the options for enabling WASI on a module (if applicable)
 #[derive(Debug, Default, Clone)]
 pub struct WasiParams {
-    pub argv: Vec<String>,
-    pub map_dirs: Vec<(String, String)>,
-    pub env_vars: Vec<(String, String)>,
-    pub preopened_dirs: Vec<String>,
+  pub argv: Vec<String>,
+  pub map_dirs: Vec<(String, String)>,
+  pub env_vars: Vec<(String, String)>,
+  pub preopened_dirs: Vec<String>,
 }
 
 impl WasiParams {
-    pub fn new(
-        argv: Vec<String>,
-        map_dirs: Vec<(String, String)>,
-        env_vars: Vec<(String, String)>,
-        preopened_dirs: Vec<String>,
-    ) -> Self {
-        WasiParams {
-            argv,
-            map_dirs,
-            preopened_dirs,
-            env_vars,
-        }
+  pub fn new(
+    argv: Vec<String>,
+    map_dirs: Vec<(String, String)>,
+    env_vars: Vec<(String, String)>,
+    preopened_dirs: Vec<String>,
+  ) -> Self {
+    WasiParams {
+      argv,
+      map_dirs,
+      preopened_dirs,
+      env_vars,
     }
+  }
 }
 
 #[derive(Default)]
@@ -189,174 +190,165 @@ impl WasiParams {
 /// to read and write relevant data as different low-level functions are executed during
 /// a waPC conversation
 pub struct ModuleState {
-    guest_request: RwLock<Option<Invocation>>,
-    guest_response: RwLock<Option<Vec<u8>>>,
-    host_response: RwLock<Option<Vec<u8>>>,
-    guest_error: RwLock<Option<String>>,
-    host_error: RwLock<Option<String>>,
-    host_callback: Option<Box<HostCallback>>,
-    id: u64,
+  guest_request: RwLock<Option<Invocation>>,
+  guest_response: RwLock<Option<Vec<u8>>>,
+  host_response: RwLock<Option<Vec<u8>>>,
+  guest_error: RwLock<Option<String>>,
+  host_error: RwLock<Option<String>>,
+  host_callback: Option<Arc<HostCallback>>,
+  id: u64,
 }
 
 impl ModuleState {
-    pub(crate) fn new(host_callback: Box<HostCallback>, id: u64) -> ModuleState {
-        ModuleState {
-            host_callback: Some(Box::new(host_callback)),
-            id,
-            guest_request: RwLock::new(None),
-            guest_response: RwLock::new(None),
-            host_response: RwLock::new(None),
-            guest_error: RwLock::new(None),
-            host_error: RwLock::new(None),
-        }
+  pub(crate) fn new(host_callback: Option<Arc<HostCallback>>, id: u64) -> ModuleState {
+    ModuleState {
+      host_callback,
+      id,
+      guest_request: RwLock::new(None),
+      guest_response: RwLock::new(None),
+      host_response: RwLock::new(None),
+      guest_error: RwLock::new(None),
+      host_error: RwLock::new(None),
     }
+  }
 }
 
 impl ModuleState {
-    /// Retrieves the value, if any, of the current guest request
-    pub fn get_guest_request(&self) -> Option<Invocation> {
-        self.guest_request.read().clone()
-    }
+  /// Retrieves the value, if any, of the current guest request
+  pub fn get_guest_request(&self) -> Option<Invocation> {
+    self.guest_request.read().clone()
+  }
 
-    /// Retrieves the value of the current host response
-    pub fn get_host_response(&self) -> Option<Vec<u8>> {
-        self.host_response.read().clone()
-    }
+  /// Retrieves the value of the current host response
+  pub fn get_host_response(&self) -> Option<Vec<u8>> {
+    self.host_response.read().clone()
+  }
 
-    /// Sets a value indicating that an error occurred inside the execution of a guest call
-    pub fn set_guest_error(&self, error: String) {
-        *self.guest_error.write() = Some(error);
-    }
+  /// Sets a value indicating that an error occurred inside the execution of a guest call
+  pub fn set_guest_error(&self, error: String) {
+    *self.guest_error.write() = Some(error);
+  }
 
-    /// Sets the value indicating the response data from a guest call
-    pub fn set_guest_response(&self, response: Vec<u8>) {
-        *self.guest_response.write() = Some(response);
-    }
+  /// Sets the value indicating the response data from a guest call
+  pub fn set_guest_response(&self, response: Vec<u8>) {
+    *self.guest_response.write() = Some(response);
+  }
 
-    /// Queries the value of the current guest response
-    pub fn get_guest_response(&self) -> Option<Vec<u8>> {
-        self.guest_response.read().clone()
-    }
+  /// Queries the value of the current guest response
+  pub fn get_guest_response(&self) -> Option<Vec<u8>> {
+    self.guest_response.read().clone()
+  }
 
-    /// Queries the value of the current host error
-    pub fn get_host_error(&self) -> Option<String> {
-        self.host_error.read().clone()
-    }
+  /// Queries the value of the current host error
+  pub fn get_host_error(&self) -> Option<String> {
+    self.host_error.read().clone()
+  }
 
-    /// Invoked when the guest module wishes to make a call on the host
-    pub fn do_host_call(
-        &self,
-        binding: &str,
-        namespace: &str,
-        operation: &str,
-        payload: &[u8],
-    ) -> std::result::Result<i32, Box<dyn Error>> {
-        let id = {
-            *self.host_response.write() = None;
-            *self.host_error.write() = None;
-            self.id
-        };
-        let result = {
-            match self.host_callback {
-                Some(ref f) => f(id, binding, namespace, operation, payload),
-                None => Err("Missing host callback function!".into()),
-            }
-        };
-        Ok(match result {
-            Ok(v) => {
-                *self.host_response.write() = Some(v);
-                1
-            }
-            Err(e) => {
-                *self.host_error.write() = Some(format!("{}", e));
-                0
-            }
-        })
-    }
+  /// Invoked when the guest module wishes to make a call on the host
+  pub fn do_host_call(
+    &self,
+    binding: &str,
+    namespace: &str,
+    operation: &str,
+    payload: &[u8],
+  ) -> std::result::Result<i32, Box<dyn Error>> {
+    let id = {
+      *self.host_response.write() = None;
+      *self.host_error.write() = None;
+      self.id
+    };
+    let result = {
+      match self.host_callback {
+        Some(ref f) => f(id, binding, namespace, operation, payload),
+        None => Err("Missing host callback function!".into()),
+      }
+    };
+    Ok(match result {
+      Ok(v) => {
+        *self.host_response.write() = Some(v);
+        1
+      }
+      Err(e) => {
+        *self.host_error.write() = Some(format!("{}", e));
+        0
+      }
+    })
+  }
 
-    /// Invoked when the guest module wants to write a message to the host's `stdout`
-    pub fn do_console_log(&self, msg: &str) {
-        info!("Guest module {}: {}", self.id, msg);
-    }
+  /// Invoked when the guest module wants to write a message to the host's `stdout`
+  pub fn do_console_log(&self, msg: &str) {
+    info!("Guest module {}: {}", self.id, msg);
+  }
 }
 
 /// An engine provider is any code that encapsulates low-level WebAssembly interactions such
 /// as reading from and writing to linear memory, executing functions, and mapping imports
 /// in a way that conforms to the waPC conversation protocol.
-pub trait WebAssemblyEngineProvider {
-    /// Tell the engine provider that it can do whatever processing it needs to do for
-    /// initialization and give it access to the module state
-    fn init(
-        &mut self,
-        host: Arc<ModuleState>,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>>;
-    /// Trigger the waPC function call. Engine provider is responsible for execution and using the appropriate methods
-    /// on the module host. When this function is complete, the guest response and optionally the guest
-    /// error must be set to represent the high-level call result
-    fn call(
-        &mut self,
-        op_length: i32,
-        msg_length: i32,
-    ) -> std::result::Result<i32, Box<dyn std::error::Error>>;
-    /// Called by the host to replace the WebAssembly module bytes of the previously initialized module. Engine must return an
-    /// error if it does not support bytes replacement.
-    fn replace(&mut self, bytes: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>>;
+pub trait WebAssemblyEngineProvider: DynClone {
+  /// Tell the engine provider that it can do whatever processing it needs to do for
+  /// initialization and give it access to the module state
+  fn init(&mut self, host: Arc<ModuleState>)
+    -> std::result::Result<(), Box<dyn std::error::Error>>;
+  /// Trigger the waPC function call. Engine provider is responsible for execution and using the appropriate methods
+  /// on the module host. When this function is complete, the guest response and optionally the guest
+  /// error must be set to represent the high-level call result
+  fn call(
+    &mut self,
+    op_length: i32,
+    msg_length: i32,
+  ) -> std::result::Result<i32, Box<dyn std::error::Error>>;
+  /// Called by the host to replace the WebAssembly module bytes of the previously initialized module. Engine must return an
+  /// error if it does not support bytes replacement.
+  fn replace(&mut self, bytes: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>>;
 }
 
 /// The module host (waPC) must provide an implementation of this trait to the engine provider
 /// to enable waPC function calls.
 pub trait ModuleHost {
-    /// Called by the engine provider to obtain the Invocation bound for the guest module
-    fn get_guest_request(&self) -> Option<Invocation>;
-    /// Called by the engine provider to query the results of a host function call
-    fn get_host_response(&self) -> Option<Vec<u8>>;
-    /// Called by the engine provider to set the error message indicating a failure that occurred inside the guest module execution
-    fn set_guest_error(&self, error: String);
-    /// Called by the engine provider to set the response data for a guest call
-    fn set_guest_response(&self, response: Vec<u8>);
-    /// Called by the engine provider to query the host error if one is indicated by the return code for a host call
-    fn get_host_error(&self) -> Option<String>;
-    /// Called by the engine provider to allow a guest module to perform a host call. The numeric return value
-    /// will be > 0 for success (engine must obtain the host response) or 0 for error (engine must obtain the error)
-    fn do_host_call(
-        &self,
-        binding: &str,
-        namespace: &str,
-        operation: &str,
-        payload: &[u8],
-    ) -> std::result::Result<i32, Box<dyn std::error::Error>>;
-    /// Attempts to perform a console log. There are no guarantees this will happen, and no error will be returned
-    /// to the guest module if the host rejects the attempt
-    fn do_console_log(&self, msg: &str);
+  /// Called by the engine provider to obtain the Invocation bound for the guest module
+  fn get_guest_request(&self) -> Option<Invocation>;
+  /// Called by the engine provider to query the results of a host function call
+  fn get_host_response(&self) -> Option<Vec<u8>>;
+  /// Called by the engine provider to set the error message indicating a failure that occurred inside the guest module execution
+  fn set_guest_error(&self, error: String);
+  /// Called by the engine provider to set the response data for a guest call
+  fn set_guest_response(&self, response: Vec<u8>);
+  /// Called by the engine provider to query the host error if one is indicated by the return code for a host call
+  fn get_host_error(&self) -> Option<String>;
+  /// Called by the engine provider to allow a guest module to perform a host call. The numeric return value
+  /// will be > 0 for success (engine must obtain the host response) or 0 for error (engine must obtain the error)
+  fn do_host_call(
+    &self,
+    binding: &str,
+    namespace: &str,
+    operation: &str,
+    payload: &[u8],
+  ) -> std::result::Result<i32, Box<dyn std::error::Error>>;
+  /// Attempts to perform a console log. There are no guarantees this will happen, and no error will be returned
+  /// to the guest module if the host rejects the attempt
+  fn do_console_log(&self, msg: &str);
 }
 
-type HostCallback = dyn Fn(
-        u64,
-        &str,
-        &str,
-        &str,
-        &[u8],
-    ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>
-    + Sync
-    + Send
-    + 'static;
+pub type HostCallResponse = std::result::Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+type HostCallback =
+  dyn Fn(u64, &str, &str, &str, &[u8]) -> HostCallResponse + Sync + Send + 'static;
 
 #[derive(Debug, Clone)]
 /// Represents a waPC invocation, which is a combination of an operation string and the
 /// corresponding binary payload
 pub struct Invocation {
-    pub operation: String,
-    pub msg: Vec<u8>,
+  pub operation: String,
+  pub msg: Vec<u8>,
 }
 
 impl Invocation {
-    /// Creates a new invocation
-    fn new(op: &str, msg: Vec<u8>) -> Invocation {
-        Invocation {
-            operation: op.to_string(),
-            msg,
-        }
+  /// Creates a new invocation
+  fn new(op: &str, msg: Vec<u8>) -> Invocation {
+    Invocation {
+      operation: op.to_string(),
+      msg,
     }
+  }
 }
 
 /// A WebAssembly host runtime for waPC-compliant modules
@@ -366,153 +358,138 @@ impl Invocation {
 /// `WapcHost` makes no assumptions about the contents or format of either the payload or the
 /// operation name, other than that the operation name is a UTF-8 encoded string.
 pub struct WapcHost {
-    engine: RwLock<Box<dyn WebAssemblyEngineProvider + Send + Sync>>,
-    state: Arc<ModuleState>,
+  engine: RwLock<Box<dyn WebAssemblyEngineProvider + Send + Sync>>,
+  state: Arc<ModuleState>,
+}
+
+impl Clone for WapcHost {
+  fn clone(&self) -> Self {
+    let id = GLOBAL_MODULE_COUNT.fetch_add(1, Ordering::SeqCst);
+    let state = Arc::new(ModuleState::new(self.state.host_callback.clone(), id));
+    let new_host = Self {
+      engine: RwLock::new(clone_box(&*self.engine.read().as_ref())),
+      state: state.clone(),
+    };
+    new_host.initialize(state).unwrap();
+    new_host
+  }
 }
 
 impl WapcHost {
-    /// Creates a new instance of a waPC-compliant host runtime paired with a given
-    /// low-level engine provider
-    pub fn new(
-        engine: Box<dyn WebAssemblyEngineProvider + Send + Sync>,
-        host_callback: impl Fn(
-                u64,
-                &str,
-                &str,
-                &str,
-                &[u8],
-            )
-                -> std::result::Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>
-            + 'static
-            + Sync
-            + Send,
-    ) -> Result<Self> {
-        let id = GLOBAL_MODULE_COUNT.fetch_add(1, Ordering::SeqCst);
+  /// Creates a new instance of a waPC-compliant host runtime paired with a given
+  /// low-level engine provider
+  pub fn new(
+    engine: Box<dyn WebAssemblyEngineProvider + Send + Sync>,
+    host_callback: impl Fn(u64, &str, &str, &str, &[u8]) -> HostCallResponse + 'static + Sync + Send,
+  ) -> Result<Self> {
+    let id = GLOBAL_MODULE_COUNT.fetch_add(1, Ordering::SeqCst);
 
-        let state = Arc::new(ModuleState::new(Box::new(host_callback), id));
+    let state = Arc::new(ModuleState::new(Some(Arc::new(host_callback)), id));
 
-        let mh = WapcHost {
-            engine: RwLock::new(engine),
-            state: state.clone(),
-        };
+    let mh = WapcHost {
+      engine: RwLock::new(engine),
+      state: state.clone(),
+    };
 
-        mh.initialize(state)?;
+    mh.initialize(state)?;
 
-        Ok(mh)
+    Ok(mh)
+  }
+
+  fn initialize(&self, state: Arc<ModuleState>) -> Result<()> {
+    match self.engine.write().init(state) {
+      Ok(_) => Ok(()),
+      Err(e) => Err(crate::errors::new(
+        crate::errors::ErrorKind::GuestCallFailure(format!(
+          "Failed to initialize guest module: {}",
+          e
+        )),
+      )),
+    }
+  }
+
+  /// Returns a reference to the unique identifier of this module. If a parent process
+  /// has instantiated multiple `WapcHost`s, then the single static host callback function
+  /// will contain this value to allow disambiguation of modules
+  pub fn id(&self) -> u64 {
+    self.state.id
+  }
+
+  /// Invokes the `__guest_call` function within the guest module as per the waPC specification.
+  /// Provide an operation name and an opaque payload of bytes and the function returns a `Result`
+  /// containing either an error or an opaque reply of bytes.
+  ///
+  /// It is worth noting that the _first_ time `call` is invoked, the WebAssembly module
+  /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
+  /// might be due to lazy initialization or JIT-compilation.
+  pub fn call(&self, op: &str, payload: &[u8]) -> Result<Vec<u8>> {
+    let inv = Invocation::new(op, payload.to_vec());
+
+    {
+      *self.state.guest_response.write() = None;
+      *self.state.guest_request.write() = Some((inv).clone());
+      *self.state.guest_error.write() = None;
+      *self.state.host_response.write() = None;
+      *self.state.host_error.write() = None;
     }
 
-    fn initialize(&self, state: Arc<ModuleState>) -> Result<()> {
-        match self.engine.write().init(state) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(crate::errors::new(
-                crate::errors::ErrorKind::GuestCallFailure(format!(
-                    "Failed to initialize guest module: {}",
-                    e
-                )),
-            )),
+    let callresult = match self
+      .engine
+      .write()
+      .call(inv.operation.len() as i32, inv.msg.len() as i32)
+    {
+      Ok(c) => c,
+      Err(e) => {
+        return Err(errors::new(errors::ErrorKind::GuestCallFailure(format!(
+          "{}",
+          e
+        ))));
+      }
+    };
+
+    if callresult == 0 {
+      // invocation failed
+      let lock = self.state.guest_error.read();
+      match *lock {
+        Some(ref s) => Err(errors::new(errors::ErrorKind::GuestCallFailure(s.clone()))),
+        None => Err(errors::new(errors::ErrorKind::GuestCallFailure(
+          "No error message set for call failure".to_string(),
+        ))),
+      }
+    } else {
+      // invocation succeeded
+      match *self.state.guest_response.read() {
+        Some(ref e) => Ok(e.clone()),
+        None => {
+          let lock = self.state.guest_error.read();
+          match *lock {
+            Some(ref s) => Err(errors::new(errors::ErrorKind::GuestCallFailure(s.clone()))),
+            None => Err(errors::new(errors::ErrorKind::GuestCallFailure(
+              "No error message OR response set for call success".to_string(),
+            ))),
+          }
         }
+      }
     }
+  }
 
-    /// Returns a reference to the unique identifier of this module. If a parent process
-    /// has instantiated multiple `WapcHost`s, then the single static host callback function
-    /// will contain this value to allow disambiguation of modules
-    pub fn id(&self) -> u64 {
-        self.state.id
+  /// Performs a live "hot swap" of the WebAssembly module. Since all internal waPC execution is assumed to be
+  /// single-threaded and non-reentrant, this call is synchronous and so
+  /// you should never attempt to invoke `call` from another thread while performing this hot swap.
+  ///
+  /// **Note**: if the underlying engine you've chosen is a JITting engine, then performing a swap
+  /// will re-introduce a "cold start" delay upon the next function call.
+  ///
+  /// If you perform a hot swap of a WASI module, you cannot alter the parameters used to create the WASI module
+  /// like the environment variables, mapped directories, pre-opened files, etc. Not abiding by this could lead
+  /// to privilege escalation attacks or non-deterministic behavior after the swap.
+  pub fn replace_module(&self, module: &[u8]) -> Result<()> {
+    match self.engine.write().replace(module) {
+      Ok(_) => Ok(()),
+      Err(e) => Err(errors::new(errors::ErrorKind::GuestCallFailure(format!(
+        "Failed to swap module bytes: {}",
+        e
+      )))),
     }
-
-    /// Invokes the `__guest_call` function within the guest module as per the waPC specification.
-    /// Provide an operation name and an opaque payload of bytes and the function returns a `Result`
-    /// containing either an error or an opaque reply of bytes.
-    ///
-    /// It is worth noting that the _first_ time `call` is invoked, the WebAssembly module
-    /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
-    /// might be due to lazy initialization or JIT-compilation.
-    pub fn call(&self, op: &str, payload: &[u8]) -> Result<Vec<u8>> {
-        let inv = Invocation::new(op, payload.to_vec());
-
-        {
-            *self.state.guest_response.write() = None;
-            *self.state.guest_request.write() = Some((inv).clone());
-            *self.state.guest_error.write() = None;
-            *self.state.host_response.write() = None;
-            *self.state.host_error.write() = None;
-        }
-
-        let callresult = match self
-            .engine
-            .write()
-            .call(inv.operation.len() as i32, inv.msg.len() as i32)
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return Err(errors::new(errors::ErrorKind::GuestCallFailure(format!(
-                    "{}",
-                    e
-                ))));
-            }
-        };
-
-        if callresult == 0 {
-            // invocation failed
-            let lock = self.state.guest_error.read();
-            match *lock {
-                Some(ref s) => Err(errors::new(errors::ErrorKind::GuestCallFailure(s.clone()))),
-                None => Err(errors::new(errors::ErrorKind::GuestCallFailure(
-                    "No error message set for call failure".to_string(),
-                ))),
-            }
-        } else {
-            // invocation succeeded
-            match *self.state.guest_response.read() {
-                Some(ref e) => Ok(e.clone()),
-                None => {
-                    let lock = self.state.guest_error.read();
-                    match *lock {
-                        Some(ref s) => {
-                            Err(errors::new(errors::ErrorKind::GuestCallFailure(s.clone())))
-                        }
-                        None => Err(errors::new(errors::ErrorKind::GuestCallFailure(
-                            "No error message OR response set for call success".to_string(),
-                        ))),
-                    }
-                }
-            }
-        }
-    }
-
-    /// Performs a live "hot swap" of the WebAssembly module. Since all internal waPC execution is assumed to be
-    /// single-threaded and non-reentrant, this call is synchronous and so
-    /// you should never attempt to invoke `call` from another thread while performing this hot swap.
-    ///
-    /// **Note**: if the underlying engine you've chosen is a JITting engine, then performing a swap
-    /// will re-introduce a "cold start" delay upon the next function call.
-    ///
-    /// If you perform a hot swap of a WASI module, you cannot alter the parameters used to create the WASI module
-    /// like the environment variables, mapped directories, pre-opened files, etc. Not abiding by this could lead
-    /// to privilege escalation attacks or non-deterministic behavior after the swap.
-    pub fn replace_module(&self, module: &[u8]) -> Result<()> {
-        match self.engine.write().replace(module) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(errors::new(errors::ErrorKind::GuestCallFailure(format!(
-                "Failed to swap module bytes: {}",
-                e
-            )))),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<WapcHost>();
-    }
-
-    #[test]
-    fn test_sync() {
-        fn assert_sync<T: Sync>() {}
-        assert_sync::<WapcHost>();
-    }
+  }
 }
